@@ -1,0 +1,311 @@
+#!/usr/bin/php
+<?php
+
+require __DIR__ . '/../../vendor/autoload.php';
+
+use Symfony\Component\Console\Input\InputInterface;
+use Symfony\Component\Console\Output\OutputInterface;
+use Symfony\Component\Process\ProcessBuilder;
+use Symfony\Component\Console\Application;
+
+class CodeQualityTool extends Application
+{
+    const PHP_FILES = '/(\.php)$/';
+    const PHP_FILES_IN_SRC = '/^src\/(.*)(\.php)$/';
+    const PHP_FILES_IN_CLASSES = '/^classes\/(.*)(\.php)$/';
+
+    /**
+     * @var OutputInterface
+     */
+    private $output;
+
+    /**
+     * @var InputInterface
+     */
+    private $input;
+
+    /**
+     * @var array
+     */
+    private $forbiddenDebugCodes = [
+        'js/coffee' => [
+            'filePattern' => '\.(js|coffee)(\..+)?$',
+            'forbidden' => ['debugger'],
+        ],
+        'php' => [
+            'filePattern' => '\.(php|phtml)(\..+)?$',
+            'forbidden' => [
+                // 'var_dump',
+                'ladybug_dump',
+                'print_r',
+                'if\ \(true\ \|\|',
+                'if\ \(false\ \&\&',
+                'if\ \(true\)',
+                'if\ \(false\)',
+            ],
+        ],
+        'twig' => [
+            'filePattern' => '\.(html\.twig)$',
+            'forbidden' => [
+                'dump',
+            ],
+        ],
+        'global' => [
+            'filePattern' => '.*',
+            'forbidden' => ['\<\<\<\<', '\>\>\>\>',],
+        ],
+    ];
+
+    /**
+     * @var array
+     */
+    private $linters = [
+        'js' => [
+            'filePattern' => '/(src\/js\/[a-zA-Z0-9-]*\.js)/',
+            'command' => '/usr/local/bin/jshint',
+            'arguments' => null,
+        ],
+        'php' => [
+            'filePattern' => '/\.php/',
+            'command' => '/usr/bin/php',
+            'arguments' => '-l',
+        ],
+    ];
+
+
+    public function __construct()
+    {
+        parent::__construct('Code Quality Tool', '1.0.0');
+    }
+
+    /**
+     * @param InputInterface $input
+     * @param OutputInterface $output
+     */
+    public function doRun(InputInterface $input, OutputInterface $output)
+    {
+        $this->input = $input;
+        $this->output = $output;
+
+        $output->writeln('<fg=white;options=bold;bg=red>Intaro Code Quality Tool</fg=white;options=bold;bg=red>');
+        $output->writeln('<info>Fetching files</info>');
+        $files = $this->extractCommitedFiles();
+
+        $output->writeln('<info>Running lint</info>');
+        $result = $this->lint($files);
+        if ($result) {
+            throw new Exception('There are some ' . $result .' syntax errors!');
+        }
+
+        $output->writeln(sprintf(
+            '<info>Checking for forgotten debugs or unresolved merge conflicts in %s</info>',
+            implode(', ', array_keys($this->forbiddenDebugCodes))
+        ));
+        if (!$this->checkDebugCode()) {
+            throw new Exception(sprintf('There is forgotten debug code or an unresolved merge conflict!'));
+        }
+
+        $output->writeln('<info>Good job dude!</info>');
+    }
+
+    private function checkComposer($files)
+    {
+        $composerJsonDetected = false;
+        $composerLockDetected = false;
+
+        foreach ($files as $file) {
+            if ($file === 'composer.json') {
+                $composerJsonDetected = true;
+            }
+
+            if ($file === 'composer.lock') {
+                $composerLockDetected = true;
+            }
+        }
+
+        if ($composerJsonDetected && !$composerLockDetected) {
+            throw new Exception('composer.lock must be commited if composer.json is modified!');
+        }
+    }
+
+    private function extractCommitedFiles()
+    {
+        $output = array();
+        $rc = 0;
+
+        exec('git rev-parse --verify HEAD 2> /dev/null', $output, $rc);
+
+        $against = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+        if ($rc == 0) {
+            $against = 'HEAD';
+        }
+
+        exec("git diff-index --cached --name-status $against | egrep '^(A|M)' | awk '{print $2;}'", $output);
+
+        return $output;
+    }
+
+    private function lint($files)
+    {
+        $failure = false;
+
+        foreach ($this->linters as $language => $config) {
+            foreach ($files as $file) {
+                if (!preg_match($config['filePattern'], $file)) {
+                    continue;
+                }
+                $processBuilder = new ProcessBuilder(array($config['command'], $config['arguments'], $file));
+                $process = $processBuilder->getProcess();
+                $process->run();
+
+                if (!$process->isSuccessful()) {
+                    $this->output->writeln($file);
+
+                    if ($language == 'js') {
+                        $this->output->writeln(sprintf('<error>Errors: %s</error>', $process->getOutput()));
+                    } else {
+                        $this->output->writeln(sprintf('<error>Errors: %s</error>', $process->getErrorOutput()));
+                    }
+
+                    $failure = $language;
+                }
+            }
+        }
+
+        return $failure;
+    }
+
+    private function codeStyle(array $files)
+    {
+        $succeed = true;
+
+        foreach ($files as $file) {
+            $phpFile = preg_match(self::PHP_FILES, $file);
+
+            if (!$phpFile) {
+                continue;
+            }
+
+            $fixers = 'contrib';
+            $processBuilder = new ProcessBuilder(array(
+                'php',
+                __DIR__ . '/../../vendor/bin/php-cs-fixer',
+                '--dry-run',
+                '--level=psr2',
+                '--verbose',
+                'fix',
+                $file,
+            ));
+
+            $processBuilder->setWorkingDirectory(getcwd());
+            $phpCsFixer = $processBuilder->getProcess();
+            $phpCsFixer->run();
+
+            if (!$phpCsFixer->isSuccessful()) {
+                $this->output->writeln(sprintf('<error>%s</error>', trim($phpCsFixer->getOutput())));
+
+                if ($succeed) {
+                    $succeed = false;
+                }
+            }
+        }
+
+        return $succeed;
+    }
+
+    private function codeStylePsr(array $files)
+    {
+        $succeed = true;
+        $needle = self::PHP_FILES_IN_SRC;
+
+        foreach ($files as $file) {
+            if (!preg_match($needle, $file)) {
+                continue;
+            }
+
+            $processBuilder = new ProcessBuilder(array('php', __DIR__ . '/../../vendor/bin/phpcs', '--encoding=utf-8', '--standard=PSR2', $file));
+            $processBuilder->setWorkingDirectory(getcwd());
+            $phpCsFixer = $processBuilder->getProcess();
+            $phpCsFixer->run();
+
+            if (!$phpCsFixer->isSuccessful()) {
+                $this->output->writeln(sprintf('<error>%s</error>', trim($phpCsFixer->getOutput())));
+
+                if ($succeed) {
+                    $succeed = false;
+                }
+            }
+        }
+
+        return $succeed;
+    }
+
+    private function checkDebugCode()
+    {
+        $succeed = true;
+
+        foreach ($this->forbiddenDebugCodes as $data) {
+            $response = $this->findDebugCode($data['forbidden'], $data['filePattern']);
+
+            if ($response['statusCode'] == 1) {
+                $this->output->writeln(
+                    sprintf(
+                        '<error>%s</error>',
+                        implode(PHP_EOL, $response['output'])
+                    )
+                );
+
+                $succeed = false;
+            }
+        }
+
+        return $succeed;
+    }
+
+    /**
+     * @param array  $forbidden
+     * @param string $filePattern
+     *
+     * @return array [int 'statusCode', array 'outputRows']
+     */
+    private function findDebugCode(array $forbidden, $filePattern)
+    {
+        $response = ['statusCode' => 0];
+
+        foreach ($forbidden as $snippet) {
+            if ($response['statusCode'] == 1) {
+                return $response;
+            }
+
+            $script = sprintf(
+                "git diff --cached --name-only | \
+                grep -E '%s' | \
+                GREP_COLOR='4;5;37;41' xargs grep --color --with-filename -n %s \
+                && echo 'COMMIT REJECTED Found %s references. \
+                Please remove them before commiting' && exit 1",
+                $filePattern,
+                $snippet,
+                $snippet
+            );
+
+            exec($script, $response['output'], $response['statusCode']);
+        }
+
+        return $response;
+    }
+    /**
+     * @return bool
+     */
+    private function runPHPUnit()
+    {
+        $output = shell_exec(__DIR__.'/../../vendor/bin/phpunit');
+        if (preg_match('/FAILURES|Fatal/' , $output)) {
+            $this->output->writeln(sprintf('<error>%s</error>', trim($output)));
+            return false;
+        }
+        return true;
+    }
+}
+
+$console = new CodeQualityTool();
+$console->run();
