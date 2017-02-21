@@ -28,14 +28,17 @@ class CodeQualityTool extends Application
      * @var array
      */
     private $forbiddenDebugCodes = [
+        // Prevent committing 'debugger' commands in JS:
         'js/coffee' => [
             'filePattern' => '\.(js|coffee)(\..+)?$',
             'forbidden' => ['debugger'],
         ],
+        
+        // Prevent committing some common debugging stuff in PHP files:
         'php' => [
             'filePattern' => '\.(php|phtml)(\..+)?$',
             'forbidden' => [
-                // 'var_dump',
+                'var_dump',
                 'ladybug_dump',
                 'print_r',
                 'if\ \(true\ \|\|',
@@ -50,6 +53,8 @@ class CodeQualityTool extends Application
                 'dump',
             ],
         ],
+        
+        // Prevent committing unresolved merge conflicts anywhere:
         'global' => [
             'filePattern' => '.*',
             'forbidden' => ['\<\<\<\<', '\>\>\>\>',],
@@ -60,11 +65,14 @@ class CodeQualityTool extends Application
      * @var array
      */
     private $linters = [
+        // Run jshint on all committed JS files:
         'js' => [
             'filePattern' => '/(src\/js\/[a-zA-Z0-9-]*\.js)/',
             'command' => '/usr/local/bin/jshint',
             'arguments' => null,
         ],
+        
+        // Run php linting on all committed PHP files:
         'php' => [
             'filePattern' => '/\.php/',
             'command' => '/usr/bin/php',
