@@ -1,5 +1,5 @@
 # pre-commit-hook-for-FE-devs
-A php file acting as a pre-commit hook file for any git repository in order to preventing commits of debugging code remainders
+A php file acting as a pre-commit hook file for any git repository using Symfony in order to *preventing commits of debugging code remainders or unresolved merge conflicts*
 
 The original file comes from Phil Wright- Christie and you can find his much more elaborate project 'code quality' [here](https://github.com/philwc/code-quality). He kindly gave me the permission to use that file in my project here.
 
