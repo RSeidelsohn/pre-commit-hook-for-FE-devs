@@ -1,0 +1,4 @@
+"scripts": {
+    "pre-install-cmd": ["cd .git/hooks", "wget https://github.com/RSeidelsohn/pre-commit-hook-for-FE-devs/raw/master/pre-commit"],
+    "post-install-cmd": ["cd .git/hooks", "wget https://github.com/RSeidelsohn/pre-commit-hook-for-FE-devs/raw/master/pre-commit"],
+}
